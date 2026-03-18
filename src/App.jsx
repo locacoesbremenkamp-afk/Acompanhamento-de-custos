@@ -160,8 +160,10 @@ export default function App(){
   const [showMed,setShowMed]= useState(false);
   const [showPag,setShowPag]= useState(false);
   const [toast,setToast]    = useState({msg:"",type:"success"});
-  const [syncing,setSyncing]= useState(false);
-  const [syncErr,setSyncErr]= useState("");
+  const [syncing,setSyncing]  = useState(false);
+  const [syncErr,setSyncErr]  = useState("");
+  const [dbStatus,setDbStatus]= useState("checking"); // "ok" | "error" | "checking"
+  const [lastSaved,setLastSaved]=useState(null);
   const [medForm,setMedForm]= useState({date:today(),type:"quinzenal",notes:""});
   const [pagForm,setPagForm]= useState({date:today(),type:"Entrada",value:"",notes:""});
   const [cfgForm,setCfgForm]= useState(null);
@@ -169,17 +171,33 @@ export default function App(){
   const fire=(msg,type="success")=>{setToast({msg,type});setTimeout(()=>setToast({msg:"",type:"success"}),4000);};
 
   useEffect(()=>{(async()=>{
-    try{const s=await loadState();setState(s||INIT());}
-    catch{setState(INIT());}
+    try{
+      const s=await loadState();
+      setState(s||INIT());
+      setDbStatus("ok");
+    } catch {
+      setState(INIT());
+      setDbStatus("error");
+    }
     setLoading(false);
   })();},[]);
 
   const save=useCallback(async s=>{
     const n={...s,saved:new Date().toISOString()};
-    setState(n); setSyncing(true); setSyncErr("");
-    try{await saveState(n);}
-    catch(e){setSyncErr("Erro ao sincronizar.");console.error(e);}
-    finally{setSyncing(false);}
+    setState(n); setSyncing(true); setSyncErr(""); setLastSaved(null);
+    try{
+      await saveState(n);
+      setDbStatus("ok");
+      setLastSaved(new Date());
+      fire("✅ Salvo no Supabase!");
+    } catch(e){
+      setSyncErr(e.message);
+      setDbStatus("error");
+      fire("❌ Erro ao salvar no Supabase","error");
+      console.error(e);
+    } finally{
+      setSyncing(false);
+    }
   },[]);
 
   const cfg         = state?.config || DEFAULT_CONFIG;
@@ -322,20 +340,25 @@ ${state.pagamentos?.length>0?`<h2>Histórico de Pagamentos Recebidos</h2>
       <style>{CSS}</style>
 
       {/* ── Header ── */}
-      <div style={{background:"#1F3864",color:"#fff",padding:"0 16px",display:"flex",alignItems:"center",justifyContent:"space-between",height:52,boxShadow:"0 2px 12px rgba(0,0,0,.25)",position:"sticky",top:0,zIndex:100}}>
+      <div style={{background:"#1F3864",color:"#fff",padding:"0 16px",display:"flex",alignItems:"center",justifyContent:"space-between",height:56,boxShadow:"0 2px 12px rgba(0,0,0,.25)",position:"sticky",top:0,zIndex:100}}>
         <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
           <span style={{fontSize:18}}>🏗️</span>
           <div style={{minWidth:0}}>
             <div style={{fontWeight:700,fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{cfg.name}</div>
             <div style={{fontSize:10,opacity:.65,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{cfg.client} · {cfg.engineer}</div>
+            {/* Indicador Supabase */}
+            <div style={{display:"flex",alignItems:"center",gap:5,marginTop:2}}>
+              {dbStatus==="checking"&&<><div style={{width:7,height:7,borderRadius:"50%",background:"#FFC107",flexShrink:0}}/><span style={{fontSize:9,color:"#FFE082"}}>Verificando banco…</span></>}
+              {dbStatus==="ok"&&!syncing&&<><div style={{width:7,height:7,borderRadius:"50%",background:"#69F0AE",flexShrink:0}}/><span style={{fontSize:9,color:"#B9F6CA"}}>{lastSaved?`Salvo ${lastSaved.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}`:"Supabase conectado"}</span></>}
+              {syncing&&<><div style={{width:7,height:7,border:"1.5px solid #4ECDC4",borderTopColor:"transparent",borderRadius:"50%",animation:"spin 1s linear infinite",flexShrink:0}}/><span style={{fontSize:9,color:"#90E0D0"}}>Salvando no banco…</span></>}
+              {dbStatus==="error"&&!syncing&&<><div style={{width:7,height:7,borderRadius:"50%",background:"#FF5252",flexShrink:0}}/><span style={{fontSize:9,color:"#FF8A80"}}>Erro no Supabase</span></>}
+            </div>
           </div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:12,flexShrink:0}}>
           <div style={{textAlign:"right"}}>
             <div className="tb-lbl" style={{fontSize:9,opacity:.65}}>Evolução Global</div>
             <div style={{fontWeight:700,fontSize:17,color:"#4ECDC4",fontFamily:"'IBM Plex Mono',monospace"}}>{fmtP(overall)}</div>
-            {syncing&&<div style={{fontSize:9,color:"#90E0D0",display:"flex",alignItems:"center",gap:4,justifyContent:"flex-end"}}><div style={{width:7,height:7,border:"1.5px solid #4ECDC4",borderTopColor:"transparent",borderRadius:"50%",animation:"spin 1s linear infinite"}}/> Sincronizando…</div>}
-            {syncErr&&<div style={{fontSize:9,color:"#FF8A80"}}>{syncErr}</div>}
           </div>
           <Btn sm onClick={printReport}>📄 PDF</Btn>
         </div>
