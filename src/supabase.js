@@ -15,12 +15,17 @@ export async function loadState() {
   try {
     const { data, error } = await supabase
       .from('obra_state')
-      .select('phases, medicoes, saved_at')
+      .select('phases, medicoes, pagamentos, config, saved_at')
       .eq('project_key', PROJECT_KEY)
       .single()
 
     if (!error && data) {
-      const state = { phases: data.phases, medicoes: data.medicoes }
+      const state = {
+        phases:     data.phases     || [],
+        medicoes:   data.medicoes   || [],
+        pagamentos: data.pagamentos || [],
+        config:     data.config     || {},
+      }
       localStorage.setItem(LS_KEY, JSON.stringify(state))
       return state
     }
@@ -39,13 +44,17 @@ export async function loadState() {
 export async function saveState(state) {
   const payload = {
     project_key: PROJECT_KEY,
-    phases:      state.phases,
-    medicoes:    state.medicoes,
+    phases:      state.phases      || [],
+    medicoes:    state.medicoes    || [],
+    pagamentos:  state.pagamentos  || [],
+    config:      state.config      || {},
     saved_at:    new Date().toISOString(),
   }
 
+  // Salva localmente primeiro (instantâneo)
   localStorage.setItem(LS_KEY, JSON.stringify(state))
 
+  // Persiste no Supabase
   const { error } = await supabase
     .from('obra_state')
     .upsert(payload, { onConflict: 'project_key' })
