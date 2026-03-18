@@ -11,6 +11,7 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON)
 const PROJECT_KEY = 'galpao-piracema-v1'
 const LS_KEY      = 'rzv-obra-v4'
 
+// ─── Carregar estado ──────────────────────────────────────────────────────────
 export async function loadState() {
   try {
     const { data, error } = await supabase
@@ -26,21 +27,32 @@ export async function loadState() {
         pagamentos: data.pagamentos || [],
         config:     data.config     || {},
       }
+      // Atualiza cache local
       localStorage.setItem(LS_KEY, JSON.stringify(state))
+      console.log('[RZV] Carregado do Supabase ✓', {
+        phases:     state.phases.length,
+        medicoes:   state.medicoes.length,
+        pagamentos: state.pagamentos.length,
+      })
       return state
     }
   } catch (e) {
     console.warn('[RZV] Supabase offline, usando cache local.', e)
   }
 
+  // Fallback: localStorage
   try {
     const raw = localStorage.getItem(LS_KEY)
-    if (raw) return JSON.parse(raw)
+    if (raw) {
+      console.log('[RZV] Carregado do localStorage (offline)')
+      return JSON.parse(raw)
+    }
   } catch {}
 
   return null
 }
 
+// ─── Salvar estado ────────────────────────────────────────────────────────────
 export async function saveState(state) {
   const payload = {
     project_key: PROJECT_KEY,
@@ -54,10 +66,18 @@ export async function saveState(state) {
   // Salva localmente primeiro (instantâneo)
   localStorage.setItem(LS_KEY, JSON.stringify(state))
 
-  // Persiste no Supabase
+  // Persiste no Supabase via upsert
   const { error } = await supabase
     .from('obra_state')
     .upsert(payload, { onConflict: 'project_key' })
 
-  if (error) throw error
+  if (error) {
+    console.error('[RZV] Erro ao salvar no Supabase:', error)
+    throw error
+  }
+
+  console.log('[RZV] Salvo no Supabase ✓', {
+    pagamentos: payload.pagamentos.length,
+    medicoes:   payload.medicoes.length,
+  })
 }
