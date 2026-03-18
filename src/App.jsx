@@ -1,9 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { loadState, saveState } from "./supabase.js";
 
-const API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY || "";
-
-const PROJECT = {
+const DEFAULT_CONFIG = {
   name: "Galpão Industrial — Piracema",
   location: "Serra, Espírito Santo",
   client: "DM Eventos LTDA",
@@ -15,7 +13,7 @@ const PROJECT = {
   totalMO: 1790000,
 };
 
-const PHASES = [
+const DEFAULT_PHASES = [
   { id:"00", name:"Mobilização e Instalações Básicas", color:"#1F3864", weight:2,  s:1,  e:1,  budget:35800 },
   { id:"01", name:"Escavação e Terraplanagem",          color:"#1A5276", weight:3,  s:1,  e:2,  budget:53700 },
   { id:"02", name:"Estrutura de Concreto Armado",       color:"#154360", weight:25, s:2,  e:7,  budget:447500 },
@@ -28,97 +26,125 @@ const PHASES = [
   { id:"09", name:"Comissionamento e Entrega Final",    color:"#1B5E20", weight:2,  s:18, e:18, budget:35800 },
 ];
 
-const fmt  = v => (v||0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
-const fmtP = v => `${(+v||0).toFixed(1)}%`;
-const today= () => new Date().toISOString().split("T")[0];
-const INIT = () => ({ phases: PHASES.map(p=>({...p,currentPercent:0,updates:[]})), medicoes:[] });
+const fmt   = v => (v||0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
+const fmtP  = v => `${(+v||0).toFixed(1)}%`;
+const today = () => new Date().toISOString().split("T")[0];
+const INIT  = () => ({
+  config: {...DEFAULT_CONFIG},
+  phases: DEFAULT_PHASES.map(p=>({...p,currentPercent:0,updates:[]})),
+  medicoes: [],
+  pagamentos: [],
+});
 
 const CSS = `
   @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;700&display=swap');
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
   body{font-family:'IBM Plex Sans',sans-serif;background:#EEF2F7}
   ::-webkit-scrollbar{width:5px;height:5px}
-  ::-webkit-scrollbar-track{background:#EEF2F7}
   ::-webkit-scrollbar-thumb{background:#B0BEC5;border-radius:99px}
   @keyframes spin{to{transform:rotate(360deg)}}
   @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
   .g4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
-  .g2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-  .ga{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:14px}
-  .ph-row{display:grid;grid-template-columns:36px 1fr 56px 96px 38px;align-items:center;gap:8px}
-  .m-row{display:grid;grid-template-columns:64px 100px 1fr auto;align-items:center;gap:12px}
-  .pm3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  .g2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .ga{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px}
+  .ph-row{display:grid;grid-template-columns:36px 1fr 56px 90px 36px;align-items:center;gap:8px}
   .fg2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .fg3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
   @media(max-width:640px){
     .g4{grid-template-columns:repeat(2,1fr)}
-    .g2{grid-template-columns:1fr}
+    .g3{grid-template-columns:1fr 1fr}
+    .g2,.fg2,.fg3{grid-template-columns:1fr}
     .ga{grid-template-columns:1fr}
     .ph-row{grid-template-columns:34px 1fr 52px}
     .ph-bar,.ph-reg{display:none!important}
-    .m-row{grid-template-columns:58px 1fr auto}
-    .m-notes{display:none!important}
     .tb-lbl{display:none!important}
-    .pm3{grid-template-columns:1fr 1fr}
-    .fg2{grid-template-columns:1fr}
   }
 `;
 
-function Bar({pct,color,h=9}){return(<div style={{background:"#DDE3EC",borderRadius:99,overflow:"hidden",height:h,minWidth:0}}><div style={{width:`${Math.min(100,pct||0)}%`,height:"100%",background:color,borderRadius:99,transition:"width .5s ease"}}/></div>);}
-function Lbl({children}){return <div style={{fontSize:10,fontWeight:600,color:"#607080",marginBottom:4,textTransform:"uppercase",letterSpacing:.5}}>{children}</div>;}
-function Card({children,style={}}){return <div style={{background:"#fff",borderRadius:14,padding:"16px 18px",boxShadow:"0 1px 6px rgba(0,0,0,.07)",...style}}>{children}</div>;}
-function Badge({children,color,bg}){return <span style={{display:"inline-block",padding:"2px 9px",borderRadius:99,fontSize:11,fontWeight:700,color,background:bg||color+"22",border:`1px solid ${color}33`}}>{children}</span>;}
-function Toast({msg,type}){if(!msg)return null;const bg=type==="error"?"#C62828":type==="warn"?"#E65100":"#1B5E20";return <div style={{position:"fixed",bottom:18,right:18,background:bg,color:"#fff",padding:"11px 16px",borderRadius:10,fontSize:13,fontWeight:600,zIndex:9999,boxShadow:"0 8px 24px rgba(0,0,0,.25)",maxWidth:"88vw",animation:"fadeUp .3s ease"}}>{msg}</div>;}
-function Btn({children,onClick,color="#1F3864",outline=false,sm=false,disabled=false,full=false}){const [h,setH]=useState(false);return(<button onMouseEnter={()=>setH(true)} onMouseLeave={()=>setH(false)} onClick={onClick} disabled={disabled} style={{display:"inline-flex",alignItems:"center",justifyContent:"center",gap:6,padding:sm?"6px 12px":"9px 16px",borderRadius:8,fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:600,fontSize:sm?12:13,cursor:disabled?"not-allowed":"pointer",transition:"all .15s",width:full?"100%":"auto",background:outline?(h?color+"18":"transparent"):h?color+"dd":color,color:outline?color:"#fff",border:outline?`2px solid ${color}`:"none",opacity:disabled?.5:1}}>{children}</button>);}
-function Fld({label,children}){return <div style={{marginBottom:13}}><Lbl>{label}</Lbl>{children}</div>;}
-function Inp({label,...p}){return <Fld label={label}><input {...p} style={{width:"100%",padding:"8px 11px",borderRadius:8,border:"1.5px solid #DDE3EC",fontSize:13,fontFamily:"'IBM Plex Sans',sans-serif",outline:"none",background:"#fff",...p.style}}/></Fld>;}
-function Txa({label,...p}){return <Fld label={label}><textarea {...p} style={{width:"100%",padding:"8px 11px",borderRadius:8,border:"1.5px solid #DDE3EC",fontSize:13,fontFamily:"'IBM Plex Sans',sans-serif",outline:"none",resize:"vertical",minHeight:70}}/></Fld>;}
+const Bar   = ({pct,color,h=9}) => <div style={{background:"#DDE3EC",borderRadius:99,overflow:"hidden",height:h}}><div style={{width:`${Math.min(100,pct||0)}%`,height:"100%",background:color,borderRadius:99,transition:"width .5s"}}/></div>;
+const Lbl   = ({children}) => <div style={{fontSize:10,fontWeight:600,color:"#607080",marginBottom:4,textTransform:"uppercase",letterSpacing:.5}}>{children}</div>;
+const Card  = ({children,style={}}) => <div style={{background:"#fff",borderRadius:14,padding:"16px 18px",boxShadow:"0 1px 6px rgba(0,0,0,.07)",...style}}>{children}</div>;
+const Badge = ({children,color,bg}) => <span style={{padding:"2px 9px",borderRadius:99,fontSize:11,fontWeight:700,color,background:bg||color+"22",border:`1px solid ${color}33`}}>{children}</span>;
+const Toast = ({msg,type}) => {
+  if(!msg) return null;
+  const bg = type==="error"?"#C62828":type==="warn"?"#E65100":"#1B5E20";
+  return <div style={{position:"fixed",bottom:18,right:18,background:bg,color:"#fff",padding:"11px 16px",borderRadius:10,fontSize:13,fontWeight:600,zIndex:9999,boxShadow:"0 8px 24px rgba(0,0,0,.25)",animation:"fadeUp .3s ease",maxWidth:"88vw"}}>{msg}</div>;
+};
+function Btn({children,onClick,color="#1F3864",outline=false,sm=false,disabled=false,full=false,danger=false}){
+  const [h,setH]=useState(false);
+  const c=danger?"#C62828":color;
+  return <button onMouseEnter={()=>setH(true)} onMouseLeave={()=>setH(false)} onClick={onClick} disabled={disabled}
+    style={{display:"inline-flex",alignItems:"center",justifyContent:"center",gap:6,padding:sm?"6px 11px":"9px 16px",borderRadius:8,fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:600,fontSize:sm?12:13,cursor:disabled?"not-allowed":"pointer",transition:"all .15s",width:full?"100%":"auto",background:outline?(h?c+"18":"transparent"):h?c+"dd":c,color:outline?c:"#fff",border:outline?`2px solid ${c}`:"none",opacity:disabled?.5:1}}>{children}</button>;
+}
+const Fld = ({label,children}) => <div style={{marginBottom:13}}><Lbl>{label}</Lbl>{children}</div>;
+function Inp({label,...p}){return <Fld label={label}><input {...p} style={{width:"100%",padding:"8px 11px",borderRadius:8,border:"1.5px solid #DDE3EC",fontSize:13,fontFamily:"'IBM Plex Sans',sans-serif",outline:"none",background:"#fff",...(p.style||{})}}/></Fld>;}
+function Txa({label,...p}){return <Fld label={label}><textarea {...p} style={{width:"100%",padding:"8px 11px",borderRadius:8,border:"1.5px solid #DDE3EC",fontSize:13,fontFamily:"'IBM Plex Sans',sans-serif",outline:"none",resize:"vertical",minHeight:60}}/></Fld>;}
 function Sel({label,children,...p}){return <Fld label={label}><select {...p} style={{width:"100%",padding:"8px 11px",borderRadius:8,border:"1.5px solid #DDE3EC",fontSize:13,fontFamily:"'IBM Plex Sans',sans-serif",outline:"none",background:"#fff"}}>{children}</select></Fld>;}
-function Modal({title,onClose,children,w=520}){return(<div style={{position:"fixed",inset:0,background:"rgba(15,25,40,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:16,backdropFilter:"blur(2px)"}}><div style={{background:"#fff",borderRadius:16,width:w,maxWidth:"100%",maxHeight:"90vh",overflow:"auto",boxShadow:"0 24px 64px rgba(0,0,0,.25)",animation:"fadeUp .2s ease"}}><div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"16px 20px 12px",borderBottom:"1px solid #EEF2F7",position:"sticky",top:0,background:"#fff",zIndex:1}}><span style={{fontWeight:700,fontSize:14,color:"#1A2332"}}>{title}</span><button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:22,color:"#90A0B0",lineHeight:1}}>×</button></div><div style={{padding:"18px 20px 22px"}}>{children}</div></div></div>);}
-
-async function callClaude(prompt){
-  if(!API_KEY) throw new Error("VITE_ANTHROPIC_API_KEY não configurada.");
-  const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json","x-api-key":API_KEY,"anthropic-version":"2023-06-01"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:800,messages:[{role:"user",content:prompt}]})});
-  const d=await res.json();
-  return d.content?.filter(b=>b.type==="text").map(b=>b.text).join("\n")||"";
+function Modal({title,onClose,children,w=540}){
+  return <div style={{position:"fixed",inset:0,background:"rgba(15,25,40,.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000,padding:16,backdropFilter:"blur(2px)"}}>
+    <div style={{background:"#fff",borderRadius:16,width:w,maxWidth:"100%",maxHeight:"90vh",overflow:"auto",boxShadow:"0 24px 64px rgba(0,0,0,.25)",animation:"fadeUp .2s ease"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"16px 20px 12px",borderBottom:"1px solid #EEF2F7",position:"sticky",top:0,background:"#fff",zIndex:1}}>
+        <span style={{fontWeight:700,fontSize:14,color:"#1A2332"}}>{title}</span>
+        <button onClick={onClose} style={{background:"none",border:"none",cursor:"pointer",fontSize:22,color:"#90A0B0"}}>×</button>
+      </div>
+      <div style={{padding:"18px 20px 22px"}}>{children}</div>
+    </div>
+  </div>;
 }
 
-function PhaseModal({phase,onClose,onSave}){
+function PhaseModal({phase,onClose,onSave,onReset}){
   const [open,setOpen]=useState(false);
-  const [form,setForm]=useState({percent:String(phase.currentPercent||""),notes:"",date:today()});
-  const realized=phase.budget*(phase.currentPercent||0)/100;
+  const [form,setForm]=useState({percent:"",notes:"",date:today()});
   const pc=phase.currentPercent>=100?"#1B5E20":phase.currentPercent>0?"#1A5276":"#90A0B0";
-  const save=()=>{const v=parseFloat(form.percent);if(isNaN(v)||v<0||v>100)return;onSave(phase.id,{percent:v,notes:form.notes,date:form.date});setOpen(false);setForm({percent:"",notes:"",date:today()});};
+  const save=()=>{
+    const v=parseFloat(form.percent);
+    if(isNaN(v)||v<0||v>100) return;
+    onSave(phase.id,{percent:v,notes:form.notes,date:form.date});
+    setOpen(false); setForm({percent:"",notes:"",date:today()});
+  };
   return(
     <Modal title={`Fase ${phase.id} — ${phase.name}`} onClose={onClose} w={580}>
-      <div className="pm3" style={{marginBottom:16}}>
-        {[{l:"Peso no Contrato",v:fmtP(phase.weight),c:phase.color},{l:"% Realizado",v:fmtP(phase.currentPercent),c:pc},{l:"M.O. Realizada",v:fmt(realized),c:"#1F3864"}].map(m=>(
-          <div key={m.l} style={{background:"#F4F7FB",borderRadius:10,padding:"11px 13px",borderLeft:`4px solid ${m.c}`}}>
-            <Lbl>{m.l}</Lbl>
-            <div style={{fontSize:15,fontWeight:700,color:m.c,fontFamily:"'IBM Plex Mono',monospace"}}>{m.v}</div>
+      <div className="fg3" style={{marginBottom:14}}>
+        {[{l:"Peso",v:fmtP(phase.weight),c:phase.color},{l:"% Realizado",v:fmtP(phase.currentPercent),c:pc},{l:"Orçado",v:fmt(phase.budget),c:"#1F3864"}].map(m=>(
+          <div key={m.l} style={{background:"#F4F7FB",borderRadius:10,padding:"10px 12px",borderLeft:`4px solid ${m.c}`}}>
+            <Lbl>{m.l}</Lbl><div style={{fontSize:14,fontWeight:700,color:m.c,fontFamily:"'IBM Plex Mono',monospace"}}>{m.v}</div>
           </div>
         ))}
       </div>
-      <Bar pct={phase.currentPercent} color={phase.color} h={11}/>
-      <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#90A0B0",marginTop:5,marginBottom:16}}><span>Mês {phase.s} – Mês {phase.e}</span><span>Orçado: {fmt(phase.budget)}</span></div>
+      <Bar pct={phase.currentPercent} color={phase.color} h={10}/>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"#90A0B0",marginTop:5,marginBottom:14}}>
+        <span>Mês {phase.s}–{phase.e}</span>
+        <span>Realizado: {fmt(phase.budget*(phase.currentPercent||0)/100)}</span>
+      </div>
       {!open
-        ?<div style={{marginBottom:18}}><Btn onClick={()=>setOpen(true)}>+ Atualizar % Progresso</Btn></div>
-        :<div style={{background:"#F0F7FF",borderRadius:12,padding:"14px",marginBottom:18,border:"1.5px solid #C3DCF5"}}>
-          <div style={{fontWeight:700,fontSize:13,color:"#1F3864",marginBottom:12}}>Nova Atualização de Progresso</div>
-          <div className="fg2"><Inp label="% Realizado (0–100)" type="number" min="0" max="100" value={form.percent} onChange={e=>setForm({...form,percent:e.target.value})}/><Inp label="Data" type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})}/></div>
-          <Txa label="Observações / Justificativa" value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/>
-          <div style={{display:"flex",gap:8}}><Btn onClick={save}>Salvar</Btn><Btn outline color="#607080" onClick={()=>setOpen(false)}>Cancelar</Btn></div>
+        ?<div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
+          <Btn onClick={()=>setOpen(true)}>+ Atualizar %</Btn>
+          {phase.currentPercent>0&&<Btn outline danger onClick={()=>{if(window.confirm("Zerar progresso desta fase?"))onReset(phase.id);}}>🗑 Zerar fase</Btn>}
+        </div>
+        :<div style={{background:"#F0F7FF",borderRadius:12,padding:14,marginBottom:16,border:"1.5px solid #C3DCF5"}}>
+          <div style={{fontWeight:700,fontSize:13,color:"#1F3864",marginBottom:10}}>Nova Atualização</div>
+          <div className="fg2">
+            <Inp label="% Realizado (0–100)" type="number" min="0" max="100" value={form.percent} onChange={e=>setForm({...form,percent:e.target.value})}/>
+            <Inp label="Data" type="date" value={form.date} onChange={e=>setForm({...form,date:e.target.value})}/>
+          </div>
+          <Txa label="Observações" value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})}/>
+          <div style={{display:"flex",gap:8}}>
+            <Btn onClick={save}>Salvar</Btn>
+            <Btn outline color="#607080" onClick={()=>setOpen(false)}>Cancelar</Btn>
+          </div>
         </div>}
-      <div style={{fontWeight:700,fontSize:13,color:"#1A2332",marginBottom:10}}>Histórico <span style={{fontWeight:400,color:"#90A0B0"}}>({phase.updates?.length||0} registros)</span></div>
+      <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>Histórico ({phase.updates?.length||0})</div>
       {!phase.updates?.length
-        ?<div style={{color:"#B0BEC5",fontSize:13,fontStyle:"italic"}}>Nenhum registro encontrado.</div>
-        :<div style={{maxHeight:200,overflowY:"auto",display:"flex",flexDirection:"column",gap:9}}>
+        ?<div style={{color:"#B0BEC5",fontSize:13,fontStyle:"italic"}}>Sem registros.</div>
+        :<div style={{maxHeight:190,overflowY:"auto",display:"flex",flexDirection:"column",gap:8}}>
           {[...phase.updates].reverse().map((u,i)=>(
-            <div key={i} style={{borderLeft:`3px solid ${phase.color}`,paddingLeft:11,paddingTop:3,paddingBottom:3}}>
-              <div style={{display:"flex",alignItems:"center",gap:9,flexWrap:"wrap"}}>
-                <span style={{fontWeight:700,fontSize:15,color:phase.color,fontFamily:"'IBM Plex Mono',monospace"}}>{fmtP(u.percent)}</span>
+            <div key={i} style={{borderLeft:`3px solid ${phase.color}`,paddingLeft:10}}>
+              <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                <span style={{fontWeight:700,fontSize:14,color:phase.color,fontFamily:"'IBM Plex Mono',monospace"}}>{fmtP(u.percent)}</span>
                 <span style={{fontSize:11,color:"#90A0B0"}}>{u.date}</span>
               </div>
-              {u.notes&&<div style={{fontSize:12,color:"#44556A",marginTop:2,lineHeight:1.5}}>{u.notes}</div>}
+              {u.notes&&<div style={{fontSize:12,color:"#44556A",marginTop:2}}>{u.notes}</div>}
             </div>
           ))}
         </div>}
@@ -127,45 +153,89 @@ function PhaseModal({phase,onClose,onSave}){
 }
 
 export default function App(){
-  const [state,setState]=useState(null);
-  const [loading,setLoading]=useState(true);
-  const [tab,setTab]=useState("dashboard");
-  const [sel,setSel]=useState(null);
-  const [showMed,setShowMed]=useState(false);
-  const [toast,setToast]=useState({msg:"",type:"success"});
-  const [syncing,setSyncing]=useState(false);
-  const [syncErr,setSyncErr]=useState("");
-  const [medForm,setMedForm]=useState({date:today(),type:"quinzenal",notes:""});
+  const [state,setState]    = useState(null);
+  const [loading,setLoading]= useState(true);
+  const [tab,setTab]        = useState("dashboard");
+  const [sel,setSel]        = useState(null);
+  const [showMed,setShowMed]= useState(false);
+  const [showPag,setShowPag]= useState(false);
+  const [toast,setToast]    = useState({msg:"",type:"success"});
+  const [syncing,setSyncing]= useState(false);
+  const [syncErr,setSyncErr]= useState("");
+  const [medForm,setMedForm]= useState({date:today(),type:"quinzenal",notes:""});
+  const [pagForm,setPagForm]= useState({date:today(),type:"Entrada",value:"",notes:""});
+  const [cfgForm,setCfgForm]= useState(null);
 
   const fire=(msg,type="success")=>{setToast({msg,type});setTimeout(()=>setToast({msg:"",type:"success"}),4000);};
 
-  useEffect(()=>{
-    (async()=>{
-      try{ const s=await loadState(); setState(s||INIT()); }
-      catch{ setState(INIT()); }
-      setLoading(false);
-    })();
-  },[]);
+  useEffect(()=>{(async()=>{
+    try{const s=await loadState();setState(s||INIT());}
+    catch{setState(INIT());}
+    setLoading(false);
+  })();},[]);
 
   const save=useCallback(async s=>{
     const n={...s,saved:new Date().toISOString()};
     setState(n); setSyncing(true); setSyncErr("");
-    try{ await saveState(n); }
-    catch(e){ setSyncErr("Erro ao sincronizar."); console.error(e); }
-    finally{ setSyncing(false); }
+    try{await saveState(n);}
+    catch(e){setSyncErr("Erro ao sincronizar.");console.error(e);}
+    finally{setSyncing(false);}
   },[]);
 
-  const overall=state?state.phases.reduce((a,p)=>a+(p.currentPercent||0)*p.weight/100,0):0;
-  const totalR=state?state.phases.reduce((a,p)=>a+p.budget*(p.currentPercent||0)/100,0):0;
-  const selPhase=state?.phases?.find(p=>p.id===sel);
+  const cfg         = state?.config || DEFAULT_CONFIG;
+  const overall     = state ? state.phases.reduce((a,p)=>a+(p.currentPercent||0)*p.weight/100,0) : 0;
+  const totalR      = state ? state.phases.reduce((a,p)=>a+p.budget*(p.currentPercent||0)/100,0) : 0;
+  const totalPago   = state ? (state.pagamentos||[]).reduce((a,p)=>a+(+p.value||0),0) : 0;
+  const saldoReceber= (cfg.totalMO||0) - totalPago;
+  const selPhase    = state?.phases?.find(p=>p.id===sel);
 
-  const addUpdate=(id,u)=>{save({...state,phases:state.phases.map(p=>p.id!==id?p:{...p,currentPercent:u.percent,updates:[...(p.updates||[]),{...u,id:Date.now()}]})});fire(`Fase ${id} → ${fmtP(u.percent)}`);setSel(null);};
-  const addMed=()=>{const m={id:`M${String((state.medicoes?.length||0)+1).padStart(2,"0")}`, ...medForm,overallProgress:overall,sentToClient:false,ts:new Date().toISOString()};save({...state,medicoes:[...(state.medicoes||[]),m]});fire("Medição registrada!");setShowMed(false);setMedForm({date:today(),type:"quinzenal",notes:""});};
-  const markSent=id=>{save({...state,medicoes:state.medicoes.map(m=>m.id===id?{...m,sentToClient:true}:m)});fire("Marcado como enviado.");};
+  const addUpdate=(id,u)=>{
+    save({...state,phases:state.phases.map(p=>p.id!==id?p:{...p,currentPercent:u.percent,updates:[...(p.updates||[]),{...u,id:Date.now()}]})});
+    fire(`Fase ${id} → ${fmtP(u.percent)}`); setSel(null);
+  };
+  const resetPhase=(id)=>{
+    save({...state,phases:state.phases.map(p=>p.id!==id?p:{...p,currentPercent:0,updates:[]})});
+    fire("Fase zerada.","warn"); setSel(null);
+  };
+  const resetAllPhases=()=>{
+    if(!window.confirm("Zerar TODAS as fases? Histórico será perdido.")) return;
+    save({...state,phases:state.phases.map(p=>({...p,currentPercent:0,updates:[]}))});
+    fire("Todas as fases zeradas.","warn");
+  };
+  const addMed=()=>{
+    const m={id:`M${String((state.medicoes?.length||0)+1).padStart(2,"0")}`, ...medForm,overallProgress:overall,sentToClient:false,ts:new Date().toISOString()};
+    save({...state,medicoes:[...(state.medicoes||[]),m]});
+    fire("Medição registrada!"); setShowMed(false); setMedForm({date:today(),type:"quinzenal",notes:""});
+  };
+  const delMed=(id)=>{
+    if(!window.confirm("Excluir esta medição?")) return;
+    save({...state,medicoes:state.medicoes.filter(m=>m.id!==id)});
+    fire("Medição excluída.","warn");
+  };
+  const markSent=(id)=>{
+    save({...state,medicoes:state.medicoes.map(m=>m.id===id?{...m,sentToClient:true}:m)});
+    fire("Marcado como enviado.");
+  };
+  const addPag=()=>{
+    const v=parseFloat(String(pagForm.value).replace(",","."));
+    if(isNaN(v)||v<=0){fire("Valor inválido.","error");return;}
+    const p={id:`P${String((state.pagamentos?.length||0)+1).padStart(2,"0")}`, ...pagForm,value:v,ts:new Date().toISOString()};
+    save({...state,pagamentos:[...(state.pagamentos||[]),p]});
+    fire("Pagamento registrado!"); setShowPag(false); setPagForm({date:today(),type:"Entrada",value:"",notes:""});
+  };
+  const delPag=(id)=>{
+    if(!window.confirm("Excluir este pagamento?")) return;
+    save({...state,pagamentos:state.pagamentos.filter(p=>p.id!==id)});
+    fire("Pagamento excluído.","warn");
+  };
+  const saveCfg=()=>{
+    const c={...cfgForm,totalMO:parseFloat(String(cfgForm.totalMO).replace(/[^\d.,]/g,"").replace(",","."))||0};
+    save({...state,config:c}); fire("Configurações salvas!"); setCfgForm(null);
+  };
 
   const exportJSON=()=>{
     const b=new Blob([JSON.stringify(state,null,2)],{type:"application/json"});
-    const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=`Backup_Obra_${today()}.json`;a.click();
+    const a=document.createElement("a"); a.href=URL.createObjectURL(b); a.download=`Backup_${today()}.json`; a.click();
     fire("JSON exportado.");
   };
 
@@ -178,191 +248,362 @@ export default function App(){
       return `<tr style="background:${i%2===0?"#F8FAFC":"#fff"}">
         <td><strong style="background:${p.color};color:#fff;padding:2px 7px;border-radius:4px;font-size:10px">F${p.id}</strong> ${p.name}</td>
         <td>${p.weight}%</td><td>${fmt(p.budget)}</td>
-        <td><strong>${fmtP(p.currentPercent)}</strong><div style="background:#DDE3EC;border-radius:99px;height:6px;margin-top:4px"><div style="width:${Math.min(100,p.currentPercent||0)}%;height:100%;background:${p.color};border-radius:99px"></div></div></td>
+        <td><strong>${fmtP(p.currentPercent)}</strong><div style="background:#DDE3EC;border-radius:99px;height:5px;margin-top:3px"><div style="width:${Math.min(100,p.currentPercent||0)}%;height:100%;background:${p.color};border-radius:99px"></div></div></td>
         <td>${fmt(r)}</td><td style="font-size:10px;color:#607080">${lu?.notes||"—"}</td>
       </tr>`;
     }).join("");
-    const medRows=(state.medicoes||[]).map(m=>`<tr>
-      <td><strong>${m.id}</strong></td><td>${m.date}</td><td>${m.type}</td>
-      <td><strong>${fmtP(m.overallProgress)}</strong></td>
-      <td style="font-size:10px;color:#607080">${m.notes||"—"}</td>
-      <td>${m.sentToClient?"✓ Enviado":"Pendente"}</td>
+    const pagRows=(state.pagamentos||[]).map(p=>`<tr>
+      <td><strong>${p.id}</strong></td><td>${p.date}</td><td>${p.type}</td>
+      <td style="color:#1B5E20;font-weight:700;font-family:monospace">${fmt(p.value)}</td>
+      <td style="font-size:10px;color:#607080">${p.notes||"—"}</td>
     </tr>`).join("");
-    const html=`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
-<title>Relatório — ${PROJECT.name}</title>
-<style>
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=IBM+Plex+Mono:wght@500;700&display=swap');
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'IBM Plex Sans',sans-serif;color:#1A2332;padding:24px;font-size:12px;background:#fff}
+    const html=`<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório — ${cfg.name}</title>
+<style>@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=IBM+Plex+Mono:wght@500;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:'IBM Plex Sans',sans-serif;color:#1A2332;padding:24px;font-size:12px}
 .header{background:#1F3864;color:#fff;padding:18px 22px;border-radius:8px;margin-bottom:16px}
 .header h1{font-size:15px;margin-bottom:4px}.header p{font-size:10px;opacity:.75}
-.kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px}
-.kpi-card{border-top:4px solid #1F3864;padding:12px;background:#F8FAFC;border-radius:6px;text-align:center}
-.kpi-lbl{font-size:9px;font-weight:700;color:#607080;text-transform:uppercase;letter-spacing:.5px;margin-bottom:5px}
-.kpi-val{font-size:17px;font-weight:700;font-family:'IBM Plex Mono',monospace;color:#1F3864}
-.bar-wrap{background:#DDE3EC;border-radius:99px;height:10px;overflow:hidden;margin:7px 0}
-.bar-fill{height:100%;border-radius:99px;background:${sc}}
-h2{font-size:12px;font-weight:700;color:#1F3864;margin:18px 0 8px;text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid #EEF2F7;padding-bottom:5px}
-table{width:100%;border-collapse:collapse;font-size:11px;margin-bottom:18px}
-thead tr{background:#1F3864;color:#fff}
-th{padding:8px 10px;text-align:left;font-weight:600;font-size:10px}
-td{padding:7px 10px;border-bottom:1px solid #EEF2F7;vertical-align:middle}
-tfoot tr td{background:#1F3864;color:#fff;font-weight:700;padding:8px 10px}
-.footer{margin-top:20px;padding-top:10px;border-top:2px solid #EEF2F7;font-size:10px;color:#90A0B0;line-height:1.8}
-@media print{body{padding:8px}@page{margin:1cm;size:A4}thead{display:table-header-group}tr{page-break-inside:avoid}}
-</style></head><body>
+.kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
+.kc{border-top:4px solid #1F3864;padding:11px;background:#F8FAFC;border-radius:6px;text-align:center}
+.kl{font-size:9px;font-weight:700;color:#607080;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.kv{font-size:15px;font-weight:700;font-family:'IBM Plex Mono',monospace;color:#1F3864}
+.bw{background:#DDE3EC;border-radius:99px;height:9px;overflow:hidden;margin:7px 0}
+.bf{height:100%;border-radius:99px;background:${sc}}
+h2{font-size:11px;font-weight:700;color:#1F3864;margin:16px 0 7px;text-transform:uppercase;border-bottom:2px solid #EEF2F7;padding-bottom:4px}
+table{width:100%;border-collapse:collapse;font-size:11px;margin-bottom:14px}
+thead tr{background:#1F3864;color:#fff}th{padding:7px 9px;text-align:left;font-weight:600;font-size:10px}
+td{padding:6px 9px;border-bottom:1px solid #EEF2F7;vertical-align:middle}
+tfoot td{background:#1F3864;color:#fff;font-weight:700;padding:7px 9px}
+.footer{margin-top:16px;padding-top:8px;border-top:2px solid #EEF2F7;font-size:10px;color:#90A0B0;line-height:1.8}
+@media print{body{padding:8px}@page{margin:1cm;size:A4}thead{display:table-header-group}tr{page-break-inside:avoid}}</style>
+</head><body>
 <div class="header"><h1>RELATÓRIO DE ACOMPANHAMENTO DE OBRA</h1>
-<p>${PROJECT.name} · ${PROJECT.location} · ${PROJECT.engineer} · ${PROJECT.crea}<br>${PROJECT.client} · CNPJ ${PROJECT.clientCNPJ} · Início ${PROJECT.startDate} — Prazo ${PROJECT.endDate}</p></div>
+<p>${cfg.name} · ${cfg.location} · ${cfg.engineer} · ${cfg.crea}<br>${cfg.client} · CNPJ ${cfg.clientCNPJ} · Início ${cfg.startDate} — Prazo ${cfg.endDate}</p></div>
 <div class="kpi">
-  <div class="kpi-card"><div class="kpi-lbl">M.O. Orçada Total</div><div class="kpi-val">${fmt(PROJECT.totalMO)}</div></div>
-  <div class="kpi-card" style="border-color:#117A65"><div class="kpi-lbl">M.O. Realizada (est.)</div><div class="kpi-val" style="color:#117A65">${fmt(totalR)}</div></div>
-  <div class="kpi-card" style="border-color:${sc}"><div class="kpi-lbl">% Realizado Geral</div><div class="kpi-val" style="color:${sc}">${fmtP(overall)}</div></div>
+  <div class="kc"><div class="kl">Contrato Total</div><div class="kv">${fmt(cfg.totalMO)}</div></div>
+  <div class="kc" style="border-color:#117A65"><div class="kl">Total Recebido</div><div class="kv" style="color:#117A65">${fmt(totalPago)}</div></div>
+  <div class="kc" style="border-color:#E65100"><div class="kl">Saldo a Receber</div><div class="kv" style="color:#E65100">${fmt(saldoReceber)}</div></div>
+  <div class="kc" style="border-color:${sc}"><div class="kl">% Realizado</div><div class="kv" style="color:${sc}">${fmtP(overall)}</div></div>
 </div>
 <div style="margin-bottom:16px">
-  <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:11px"><span style="font-weight:600">Progresso Global da Obra</span><span style="font-weight:700;font-family:'IBM Plex Mono',monospace;color:${sc}">${fmtP(overall)}</span></div>
-  <div class="bar-wrap"><div class="bar-fill" style="width:${Math.min(100,overall)}%"></div></div>
-  <div style="display:flex;justify-content:space-between;font-size:10px;color:#90A0B0;margin-top:4px"><span>Início: ${PROJECT.startDate}</span><span>Prazo: ${PROJECT.endDate} — 18 meses</span><span>Gerado em: ${now}</span></div>
+  <div style="display:flex;justify-content:space-between;margin-bottom:4px;font-size:11px"><span style="font-weight:600">Progresso Global</span><span style="font-weight:700;font-family:'IBM Plex Mono',monospace;color:${sc}">${fmtP(overall)}</span></div>
+  <div class="bw"><div class="bf" style="width:${Math.min(100,overall)}%"></div></div>
+  <div style="display:flex;justify-content:space-between;font-size:10px;color:#90A0B0;margin-top:3px"><span>Início: ${cfg.startDate}</span><span>Prazo: ${cfg.endDate}</span><span>Gerado: ${now}</span></div>
 </div>
 <h2>Realizado × Previsto por Etapa</h2>
-<table><thead><tr><th>Etapa</th><th>Peso</th><th>Orçado</th><th>% Real.</th><th>Realizado</th><th>Última Observação</th></tr></thead>
+<table><thead><tr><th>Etapa</th><th>Peso</th><th>Orçado</th><th>% Real.</th><th>Realizado</th><th>Última Obs.</th></tr></thead>
 <tbody>${rows}</tbody>
-<tfoot><tr><td colspan="2">TOTAL GERAL</td><td>${fmt(PROJECT.totalMO)}</td><td>${fmtP(overall)}</td><td>${fmt(totalR)}</td><td>—</td></tr></tfoot></table>
-${state.medicoes?.length>0?`<h2>Histórico de Medições</h2>
-<table><thead><tr><th>Medição</th><th>Data</th><th>Tipo</th><th>% Global</th><th>Observações</th><th>Status</th></tr></thead>
-<tbody>${medRows}</tbody></table>`:""}
-<div class="footer"><strong>RZV Engenharia</strong> · ${PROJECT.engineer} · ${PROJECT.crea} · ${PROJECT.client} · CNPJ ${PROJECT.clientCNPJ}<br>Relatório gerado em ${now}</div>
+<tfoot><tr><td colspan="2">TOTAL</td><td>${fmt(cfg.totalMO)}</td><td>${fmtP(overall)}</td><td>${fmt(totalR)}</td><td>—</td></tr></tfoot></table>
+${state.pagamentos?.length>0?`<h2>Histórico de Pagamentos Recebidos</h2>
+<table><thead><tr><th>ID</th><th>Data</th><th>Tipo</th><th>Valor</th><th>Observações</th></tr></thead>
+<tbody>${pagRows}</tbody>
+<tfoot><tr><td colspan="3">TOTAL RECEBIDO</td><td style="font-family:monospace">${fmt(totalPago)}</td><td>Saldo a receber: ${fmt(saldoReceber)}</td></tr></tfoot></table>`:""}
+<div class="footer"><strong>RZV Engenharia</strong> · ${cfg.engineer} · ${cfg.crea} · ${cfg.client} · CNPJ ${cfg.clientCNPJ}<br>Relatório gerado automaticamente em ${now}</div>
 </body></html>`;
     const blob=new Blob([html],{type:"text/html;charset=utf-8"});
-    const a=document.createElement("a");a.href=URL.createObjectURL(blob);
-    a.download=`Relatorio_Obra_${today()}.html`;
-    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob);
+    a.download=`Relatorio_${today()}.html`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(()=>URL.revokeObjectURL(a.href),3000);
-    fire("✅ Relatório baixado! Abra e pressione Ctrl+P para salvar como PDF.");
+    fire("✅ Relatório baixado! Abra e Ctrl+P para PDF.");
   };
 
-  if(loading)return(<div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#1F3864",color:"#fff",flexDirection:"column",gap:14,fontFamily:"'IBM Plex Sans',sans-serif"}}><div style={{fontSize:40}}>🏗️</div><div style={{fontSize:15,fontWeight:600}}>Carregando dados da obra...</div></div>);
+  if(loading) return(
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#1F3864",color:"#fff",flexDirection:"column",gap:14,fontFamily:"sans-serif"}}>
+      <div style={{fontSize:40}}>🏗️</div>
+      <div style={{fontWeight:600,fontSize:15}}>Carregando dados da obra...</div>
+    </div>
+  );
 
-  const sc=overall>=80?"#1B5E20":overall>=30?"#1A5276":"#E65100";
-  const TABS=[{id:"dashboard",icon:"📊",label:"Dashboard"},{id:"etapas",icon:"🏗️",label:"Etapas"},{id:"medicoes",icon:"📏",label:"Medições"},{id:"backup",icon:"💾",label:"Backup"}];
+  const sc   = overall>=80?"#1B5E20":overall>=30?"#1A5276":"#E65100";
+  const TABS = [{id:"dashboard",icon:"📊",label:"Dashboard"},{id:"etapas",icon:"🏗️",label:"Etapas"},{id:"financeiro",icon:"💰",label:"Financeiro"},{id:"medicoes",icon:"📏",label:"Medições"},{id:"config",icon:"⚙️",label:"Config"}];
 
   return(
     <div style={{minHeight:"100vh",background:"#EEF2F7",fontFamily:"'IBM Plex Sans',sans-serif"}}>
       <style>{CSS}</style>
+
+      {/* ── Header ── */}
       <div style={{background:"#1F3864",color:"#fff",padding:"0 16px",display:"flex",alignItems:"center",justifyContent:"space-between",height:52,boxShadow:"0 2px 12px rgba(0,0,0,.25)",position:"sticky",top:0,zIndex:100}}>
         <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
-          <span style={{fontSize:18,flexShrink:0}}>🏗️</span>
+          <span style={{fontSize:18}}>🏗️</span>
           <div style={{minWidth:0}}>
-            <div style={{fontWeight:700,fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{PROJECT.name}</div>
-            <div style={{fontSize:10,opacity:.65}}>{PROJECT.location} · {PROJECT.engineer}</div>
+            <div style={{fontWeight:700,fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{cfg.name}</div>
+            <div style={{fontSize:10,opacity:.65,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{cfg.client} · {cfg.engineer}</div>
           </div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:12,flexShrink:0}}>
           <div style={{textAlign:"right"}}>
             <div className="tb-lbl" style={{fontSize:9,opacity:.65}}>Evolução Global</div>
             <div style={{fontWeight:700,fontSize:17,color:"#4ECDC4",fontFamily:"'IBM Plex Mono',monospace"}}>{fmtP(overall)}</div>
-            {syncing&&<div style={{fontSize:9,color:"#90E0D0",marginTop:1,display:"flex",alignItems:"center",gap:4,justifyContent:"flex-end"}}><div style={{width:7,height:7,border:"1.5px solid #4ECDC4",borderTopColor:"transparent",borderRadius:"50%",animation:"spin 1s linear infinite"}}/> Sincronizando…</div>}
-            {syncErr&&!syncing&&<div style={{fontSize:9,color:"#FF8A80",marginTop:1}}>{syncErr}</div>}
+            {syncing&&<div style={{fontSize:9,color:"#90E0D0",display:"flex",alignItems:"center",gap:4,justifyContent:"flex-end"}}><div style={{width:7,height:7,border:"1.5px solid #4ECDC4",borderTopColor:"transparent",borderRadius:"50%",animation:"spin 1s linear infinite"}}/> Sincronizando…</div>}
+            {syncErr&&<div style={{fontSize:9,color:"#FF8A80"}}>{syncErr}</div>}
           </div>
-          <Btn sm onClick={printReport}>📄 Relatório PDF</Btn>
+          <Btn sm onClick={printReport}>📄 PDF</Btn>
         </div>
       </div>
 
+      {/* ── Tabs ── */}
       <div style={{background:"#fff",borderBottom:"1px solid #DDE3EC",display:"flex",overflowX:"auto",WebkitOverflowScrolling:"touch"}}>
-        {TABS.map(t=>(<button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"11px 14px",border:"none",background:"none",cursor:"pointer",fontWeight:tab===t.id?700:500,fontSize:13,fontFamily:"'IBM Plex Sans',sans-serif",color:tab===t.id?"#1F3864":"#90A0B0",whiteSpace:"nowrap",borderBottom:tab===t.id?"3px solid #1F3864":"3px solid transparent",transition:"all .15s",display:"flex",alignItems:"center",gap:5,flexShrink:0}}>{t.icon} {t.label}</button>))}
+        {TABS.map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} style={{padding:"11px 14px",border:"none",background:"none",cursor:"pointer",fontWeight:tab===t.id?700:500,fontSize:13,fontFamily:"'IBM Plex Sans',sans-serif",color:tab===t.id?"#1F3864":"#90A0B0",whiteSpace:"nowrap",borderBottom:tab===t.id?"3px solid #1F3864":"3px solid transparent",transition:"all .15s",display:"flex",alignItems:"center",gap:5,flexShrink:0}}>{t.icon} {t.label}</button>
+        ))}
       </div>
 
       <div style={{padding:"14px",maxWidth:1100,margin:"0 auto"}}>
+
+        {/* ── DASHBOARD ── */}
         {tab==="dashboard"&&<div style={{animation:"fadeUp .3s ease"}}>
           <div className="g4" style={{marginBottom:14}}>
-            {[{label:"Evolução Global",value:fmtP(overall),color:sc,icon:"📈"},{label:"M.O. Orçada",value:fmt(PROJECT.totalMO),color:"#1F3864",icon:"💼"},{label:"M.O. Realizada",value:fmt(totalR),color:"#117A65",icon:"✅"},{label:"Medições",value:state.medicoes?.length||0,color:"#2E74B5",icon:"📏"}].map(k=>(
+            {[
+              {label:"Evolução Global",  value:fmtP(overall),       color:sc,                              icon:"📈"},
+              {label:"Contrato Total",   value:fmt(cfg.totalMO),    color:"#1F3864",                       icon:"💼"},
+              {label:"Total Recebido",   value:fmt(totalPago),      color:"#117A65",                       icon:"✅"},
+              {label:"Saldo a Receber",  value:fmt(saldoReceber),   color:saldoReceber>0?"#E65100":"#1B5E20", icon:"💰"},
+            ].map(k=>(
               <Card key={k.label} style={{borderTop:`4px solid ${k.color}`}}>
-                <div style={{fontSize:20,marginBottom:7}}>{k.icon}</div>
+                <div style={{fontSize:20,marginBottom:6}}>{k.icon}</div>
                 <Lbl>{k.label}</Lbl>
-                <div style={{fontSize:19,fontWeight:700,color:k.color,fontFamily:"'IBM Plex Mono',monospace"}}>{k.value}</div>
+                <div style={{fontSize:18,fontWeight:700,color:k.color,fontFamily:"'IBM Plex Mono',monospace"}}>{k.value}</div>
               </Card>
             ))}
           </div>
           <Card style={{marginBottom:14}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:9,flexWrap:"wrap",gap:6}}>
-              <div style={{fontWeight:700,fontSize:14,color:"#1A2332"}}>Progresso Global da Obra</div>
+              <div style={{fontWeight:700,fontSize:14}}>Progresso Global da Obra</div>
               <span style={{fontWeight:700,fontSize:19,color:sc,fontFamily:"'IBM Plex Mono',monospace"}}>{fmtP(overall)}</span>
             </div>
-            <Bar pct={overall} color={sc} h={15}/>
-            <div style={{display:"flex",justifyContent:"space-between",marginTop:7,fontSize:11,color:"#90A0B0",flexWrap:"wrap",gap:3}}><span>Início: {PROJECT.startDate}</span><span>Prazo: {PROJECT.endDate} · 18 meses</span></div>
+            <Bar pct={overall} color={sc} h={14}/>
+            <div style={{display:"flex",justifyContent:"space-between",marginTop:6,fontSize:11,color:"#90A0B0",flexWrap:"wrap",gap:3}}>
+              <span>Início: {cfg.startDate}</span><span>Prazo: {cfg.endDate}</span>
+            </div>
           </Card>
           <Card>
-            <div style={{fontWeight:700,fontSize:14,color:"#1A2332",marginBottom:12}}>Etapas — toque para registrar progresso</div>
+            <div style={{fontWeight:700,fontSize:14,marginBottom:12}}>Etapas — toque para atualizar</div>
             {state.phases.map(p=>(
               <div key={p.id} onClick={()=>setSel(p.id)} style={{cursor:"pointer",borderBottom:"1px solid #EEF2F7",padding:"9px 8px",borderRadius:8,transition:"background .15s"}} onMouseOver={e=>e.currentTarget.style.background="#F4F7FB"} onMouseOut={e=>e.currentTarget.style.background="transparent"}>
                 <div className="ph-row">
                   <div style={{background:p.color,color:"#fff",borderRadius:7,padding:"5px 0",textAlign:"center",fontWeight:700,fontSize:11}}>{p.id}</div>
-                  <div style={{minWidth:0}}><div style={{fontWeight:600,fontSize:13,color:"#1A2332",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</div><div style={{fontSize:10,color:"#90A0B0"}}>Peso {p.weight}% · Mês {p.s}–{p.e}</div></div>
-                  <div style={{fontWeight:700,fontSize:13,textAlign:"right",color:p.currentPercent>=100?"#1B5E20":p.currentPercent>0?"#1A5276":"#B0BEC5",fontFamily:"'IBM Plex Mono',monospace",flexShrink:0}}>{fmtP(p.currentPercent)}</div>
+                  <div style={{minWidth:0}}>
+                    <div style={{fontWeight:600,fontSize:13,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</div>
+                    <div style={{fontSize:10,color:"#90A0B0"}}>Peso {p.weight}%</div>
+                  </div>
+                  <div style={{fontWeight:700,fontSize:13,textAlign:"right",color:p.currentPercent>=100?"#1B5E20":p.currentPercent>0?"#1A5276":"#B0BEC5",fontFamily:"'IBM Plex Mono',monospace"}}>{fmtP(p.currentPercent)}</div>
                   <div className="ph-bar"><Bar pct={p.currentPercent} color={p.color} h={7}/></div>
-                  <div className="ph-reg" style={{textAlign:"right",fontSize:10,color:"#B0BEC5",flexShrink:0}}>{p.updates?.length||0} reg.</div>
+                  <div className="ph-reg" style={{textAlign:"right",fontSize:10,color:"#B0BEC5"}}>{p.updates?.length||0}</div>
                 </div>
               </div>
             ))}
           </Card>
         </div>}
 
-        {tab==="etapas"&&<div className="ga" style={{animation:"fadeUp .3s ease"}}>
-          {state.phases.map(p=>{const lu=p.updates?.[p.updates.length-1];return(
-            <div key={p.id} onClick={()=>setSel(p.id)} style={{background:"#fff",borderRadius:14,padding:"15px",cursor:"pointer",boxShadow:"0 1px 6px rgba(0,0,0,.07)",borderLeft:`5px solid ${p.color}`,transition:"transform .15s,box-shadow .15s"}} onMouseOver={e=>{e.currentTarget.style.transform="translateY(-2px)";e.currentTarget.style.boxShadow="0 6px 18px rgba(0,0,0,.11)"}} onMouseOut={e=>{e.currentTarget.style.transform="";e.currentTarget.style.boxShadow="0 1px 6px rgba(0,0,0,.07)"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:9,gap:8}}>
-                <span style={{background:p.color,color:"#fff",borderRadius:6,padding:"3px 9px",fontSize:11,fontWeight:700,flexShrink:0}}>Fase {p.id}</span>
-                <span style={{fontWeight:700,fontSize:17,color:p.currentPercent>=100?"#1B5E20":p.currentPercent>0?"#1A5276":"#B0BEC5",fontFamily:"'IBM Plex Mono',monospace"}}>{fmtP(p.currentPercent)}</span>
+        {/* ── ETAPAS ── */}
+        {tab==="etapas"&&<div style={{animation:"fadeUp .3s ease"}}>
+          <div style={{display:"flex",justifyContent:"flex-end",marginBottom:12}}>
+            <Btn outline danger onClick={resetAllPhases}>🗑 Zerar todas as fases</Btn>
+          </div>
+          <div className="ga">
+            {state.phases.map(p=>{const lu=p.updates?.[p.updates.length-1];return(
+              <div key={p.id} onClick={()=>setSel(p.id)} style={{background:"#fff",borderRadius:14,padding:15,cursor:"pointer",boxShadow:"0 1px 6px rgba(0,0,0,.07)",borderLeft:`5px solid ${p.color}`,transition:"transform .15s,box-shadow .15s"}} onMouseOver={e=>{e.currentTarget.style.transform="translateY(-2px)";e.currentTarget.style.boxShadow="0 6px 18px rgba(0,0,0,.11)"}} onMouseOut={e=>{e.currentTarget.style.transform="";e.currentTarget.style.boxShadow="0 1px 6px rgba(0,0,0,.07)"}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+                  <span style={{background:p.color,color:"#fff",borderRadius:6,padding:"3px 9px",fontSize:11,fontWeight:700}}>Fase {p.id}</span>
+                  <span style={{fontWeight:700,fontSize:17,color:p.currentPercent>=100?"#1B5E20":p.currentPercent>0?"#1A5276":"#B0BEC5",fontFamily:"'IBM Plex Mono',monospace"}}>{fmtP(p.currentPercent)}</span>
+                </div>
+                <div style={{fontWeight:700,fontSize:13,marginBottom:8,lineHeight:1.4}}>{p.name}</div>
+                <Bar pct={p.currentPercent} color={p.color} h={8}/>
+                <div style={{display:"flex",justifyContent:"space-between",marginTop:7,fontSize:11,color:"#90A0B0"}}>
+                  <span>{fmt(p.budget)}</span><span>{p.updates?.length||0} atualizações</span>
+                </div>
+                {lu&&<div style={{marginTop:8,background:"#F4F7FB",borderRadius:8,padding:"6px 10px",fontSize:11,color:"#44556A"}}><strong>Último:</strong> {lu.date} — {fmtP(lu.percent)}</div>}
               </div>
-              <div style={{fontWeight:700,fontSize:13,color:"#1A2332",marginBottom:9,lineHeight:1.4}}>{p.name}</div>
-              <Bar pct={p.currentPercent} color={p.color} h={8}/>
-              <div style={{display:"flex",justifyContent:"space-between",marginTop:8,fontSize:11,color:"#90A0B0"}}><span>Orçado: {fmt(p.budget)}</span><span>{p.updates?.length||0} atualizações</span></div>
-              {lu&&<div style={{marginTop:8,background:"#F4F7FB",borderRadius:8,padding:"6px 10px",fontSize:11,color:"#44556A",lineHeight:1.5}}><strong>Último:</strong> {lu.date} — {fmtP(lu.percent)}{lu.notes?` — ${lu.notes.substring(0,50)}${lu.notes.length>50?"…":""}`:""}</div>}
-            </div>);})}
+            );})}
+          </div>
         </div>}
 
-        {tab==="medicoes"&&<div style={{animation:"fadeUp .3s ease"}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:10}}>
-            <div><div style={{fontWeight:700,fontSize:16,color:"#1A2332"}}>Medições Registradas</div><div style={{fontSize:12,color:"#90A0B0",marginTop:2}}>Acompanhamento quinzenal ou mensal do avanço físico</div></div>
-            <Btn onClick={()=>setShowMed(true)}>+ Nova Medição</Btn>
+        {/* ── FINANCEIRO ── */}
+        {tab==="financeiro"&&<div style={{animation:"fadeUp .3s ease"}}>
+          <div className="g3" style={{marginBottom:14}}>
+            {[
+              {l:"Valor do Contrato", v:fmt(cfg.totalMO),    c:"#1F3864", icon:"📋"},
+              {l:"Total Recebido",    v:fmt(totalPago),      c:"#117A65", icon:"💵"},
+              {l:"Saldo a Receber",   v:fmt(saldoReceber),   c:saldoReceber>0?"#E65100":"#1B5E20", icon:"⚖️"},
+            ].map(k=>(
+              <Card key={k.l} style={{borderTop:`4px solid ${k.c}`,textAlign:"center"}}>
+                <div style={{fontSize:24,marginBottom:6}}>{k.icon}</div>
+                <Lbl>{k.l}</Lbl>
+                <div style={{fontSize:20,fontWeight:700,color:k.c,fontFamily:"'IBM Plex Mono',monospace"}}>{k.v}</div>
+              </Card>
+            ))}
           </div>
-          {!state.medicoes?.length
-            ?<Card style={{textAlign:"center",padding:"36px 20px"}}><div style={{fontSize:36,marginBottom:9}}>📏</div><div style={{fontWeight:600,color:"#44556A",marginBottom:5}}>Nenhuma medição registrada.</div><div style={{fontSize:13,color:"#90A0B0",marginBottom:14}}>Inicie registrando a primeira medição da obra.</div><Btn onClick={()=>setShowMed(true)}>+ Registrar Primeira Medição</Btn></Card>
-            :<div style={{display:"flex",flexDirection:"column",gap:11}}>
-              {[...state.medicoes].reverse().map(m=>(
-                <Card key={m.id}>
-                  <div className="m-row">
-                    <div style={{background:"#1F3864",color:"#fff",borderRadius:9,padding:"9px 7px",textAlign:"center",fontWeight:700,flexShrink:0}}><div style={{fontSize:13,fontFamily:"'IBM Plex Mono',monospace"}}>{m.id}</div><div style={{fontSize:9,opacity:.65,marginTop:2}}>{m.type}</div></div>
-                    <div style={{minWidth:0}}><div style={{fontWeight:700,fontSize:13}}>{m.date}</div><div style={{fontWeight:700,fontSize:17,color:"#1A5276",fontFamily:"'IBM Plex Mono',monospace"}}>{fmtP(m.overallProgress)}</div></div>
-                    <div className="m-notes" style={{fontSize:12,color:"#607080",minWidth:0}}>{m.notes||<span style={{color:"#B0BEC5",fontStyle:"italic"}}>Sem observações</span>}</div>
-                    <div style={{flexShrink:0}}>{m.sentToClient?<Badge color="#1B5E20" bg="#E8F5E9">✓ Enviado</Badge>:<Btn sm onClick={()=>markSent(m.id)}>Marcar enviado</Btn>}</div>
+          <Card style={{marginBottom:14}}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:7,flexWrap:"wrap",gap:6}}>
+              <span style={{fontWeight:700,fontSize:13}}>Recebido vs Contrato</span>
+              <span style={{fontWeight:700,color:"#117A65",fontFamily:"'IBM Plex Mono',monospace"}}>{fmtP(cfg.totalMO>0?totalPago/cfg.totalMO*100:0)}</span>
+            </div>
+            <Bar pct={cfg.totalMO>0?totalPago/cfg.totalMO*100:0} color="#117A65" h={12}/>
+            <div style={{display:"flex",justifyContent:"space-between",marginTop:6,fontSize:11,color:"#90A0B0"}}>
+              <span>Recebido: {fmt(totalPago)}</span><span>Restante: {fmt(saldoReceber)}</span>
+            </div>
+          </Card>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,flexWrap:"wrap",gap:8}}>
+            <div style={{fontWeight:700,fontSize:15}}>Pagamentos Recebidos</div>
+            <Btn onClick={()=>setShowPag(true)}>+ Registrar Pagamento</Btn>
+          </div>
+          {!state.pagamentos?.length
+            ?<Card style={{textAlign:"center",padding:"32px 20px"}}>
+                <div style={{fontSize:36,marginBottom:8}}>💰</div>
+                <div style={{fontWeight:600,color:"#44556A",marginBottom:4}}>Nenhum pagamento registrado.</div>
+                <div style={{fontSize:13,color:"#90A0B0",marginBottom:12}}>Registre a entrada inicial para começar o controle financeiro.</div>
+                <Btn onClick={()=>setShowPag(true)}>+ Registrar Entrada</Btn>
+              </Card>
+            :<div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {[...state.pagamentos].reverse().map(p=>(
+                <Card key={p.id}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+                    <div style={{display:"flex",alignItems:"center",gap:12}}>
+                      <div style={{background:"#1F3864",color:"#fff",borderRadius:9,padding:"8px",textAlign:"center",fontWeight:700,minWidth:52,flexShrink:0}}>
+                        <div style={{fontSize:12,fontFamily:"'IBM Plex Mono',monospace"}}>{p.id}</div>
+                        <div style={{fontSize:9,opacity:.65,marginTop:1}}>{p.type}</div>
+                      </div>
+                      <div>
+                        <div style={{fontWeight:700,fontSize:16,color:"#117A65",fontFamily:"'IBM Plex Mono',monospace"}}>{fmt(p.value)}</div>
+                        <div style={{fontSize:12,color:"#607080"}}>{p.date}{p.notes?` — ${p.notes}`:""}</div>
+                      </div>
+                    </div>
+                    <Btn sm danger outline onClick={()=>delPag(p.id)}>🗑 Excluir</Btn>
                   </div>
                 </Card>
               ))}
             </div>}
         </div>}
 
-        {tab==="backup"&&<div style={{animation:"fadeUp .3s ease"}}>
-          <div className="g2" style={{marginBottom:14}}>
-            {[
-              {icon:"📄",title:"Relatório PDF para Cliente",color:"#1F3864",desc:"Gera o relatório como arquivo HTML — abra no navegador e pressione Ctrl+P para salvar como PDF.",action:printReport,btn:"Baixar Relatório"},
-              {icon:"📁",title:"Exportar Backup JSON",color:"#4285F4",desc:"Exporta todos os dados da obra em formato JSON para salvar no Google Drive ou OneDrive.",action:exportJSON,btn:"Exportar JSON"},
-            ].map(card=>(<Card key={card.title} style={{borderTop:`4px solid ${card.color}`}}><div style={{fontSize:26,marginBottom:9}}>{card.icon}</div><div style={{fontWeight:700,fontSize:14,color:"#1A2332",marginBottom:6}}>{card.title}</div><div style={{fontSize:12,color:"#607080",marginBottom:14,lineHeight:1.6}}>{card.desc}</div><Btn onClick={card.action} color={card.color} full>{card.btn}</Btn></Card>))}
+        {/* ── MEDIÇÕES ── */}
+        {tab==="medicoes"&&<div style={{animation:"fadeUp .3s ease"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,flexWrap:"wrap",gap:10}}>
+            <div>
+              <div style={{fontWeight:700,fontSize:16}}>Medições</div>
+              <div style={{fontSize:12,color:"#90A0B0",marginTop:2}}>Acompanhamento quinzenal ou mensal do avanço físico</div>
+            </div>
+            <Btn onClick={()=>setShowMed(true)}>+ Nova Medição</Btn>
           </div>
+          {!state.medicoes?.length
+            ?<Card style={{textAlign:"center",padding:"32px 20px"}}>
+                <div style={{fontSize:36,marginBottom:8}}>📏</div>
+                <div style={{fontWeight:600,color:"#44556A",marginBottom:12}}>Nenhuma medição registrada.</div>
+                <Btn onClick={()=>setShowMed(true)}>+ Registrar Primeira</Btn>
+              </Card>
+            :<div style={{display:"flex",flexDirection:"column",gap:10}}>
+              {[...state.medicoes].reverse().map(m=>(
+                <Card key={m.id}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+                    <div style={{display:"flex",alignItems:"center",gap:12}}>
+                      <div style={{background:"#1F3864",color:"#fff",borderRadius:9,padding:"8px",textAlign:"center",fontWeight:700,minWidth:52,flexShrink:0}}>
+                        <div style={{fontSize:12,fontFamily:"'IBM Plex Mono',monospace"}}>{m.id}</div>
+                        <div style={{fontSize:9,opacity:.65,marginTop:1}}>{m.type}</div>
+                      </div>
+                      <div>
+                        <div style={{fontWeight:700,fontSize:14}}>{m.date}</div>
+                        <div style={{fontWeight:700,fontSize:16,color:"#1A5276",fontFamily:"'IBM Plex Mono',monospace"}}>{fmtP(m.overallProgress)}</div>
+                        {m.notes&&<div style={{fontSize:12,color:"#607080"}}>{m.notes}</div>}
+                      </div>
+                    </div>
+                    <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                      {m.sentToClient?<Badge color="#1B5E20" bg="#E8F5E9">✓ Enviado</Badge>:<Btn sm onClick={()=>markSent(m.id)}>Marcar enviado</Btn>}
+                      <Btn sm danger outline onClick={()=>delMed(m.id)}>🗑</Btn>
+                    </div>
+                  </div>
+                </Card>
+              ))}
+            </div>}
+        </div>}
+
+        {/* ── CONFIG ── */}
+        {tab==="config"&&<div style={{animation:"fadeUp .3s ease"}}>
+          <Card style={{marginBottom:14}}>
+            <div style={{fontWeight:700,fontSize:15,marginBottom:14}}>⚙️ Dados do Projeto</div>
+            <div className="fg2">
+              <Inp label="Nome da Obra"            value={cfgForm?.name        ??cfg.name}        onChange={e=>setCfgForm({...(cfgForm||cfg),name:e.target.value})}/>
+              <Inp label="Localização"             value={cfgForm?.location    ??cfg.location}    onChange={e=>setCfgForm({...(cfgForm||cfg),location:e.target.value})}/>
+              <Inp label="Cliente"                 value={cfgForm?.client      ??cfg.client}      onChange={e=>setCfgForm({...(cfgForm||cfg),client:e.target.value})}/>
+              <Inp label="CNPJ do Cliente"         value={cfgForm?.clientCNPJ  ??cfg.clientCNPJ}  onChange={e=>setCfgForm({...(cfgForm||cfg),clientCNPJ:e.target.value})}/>
+              <Inp label="Engenheiro Responsável"  value={cfgForm?.engineer    ??cfg.engineer}    onChange={e=>setCfgForm({...(cfgForm||cfg),engineer:e.target.value})}/>
+              <Inp label="CREA"                    value={cfgForm?.crea        ??cfg.crea}        onChange={e=>setCfgForm({...(cfgForm||cfg),crea:e.target.value})}/>
+              <Inp label="Data de Início"          value={cfgForm?.startDate   ??cfg.startDate}   onChange={e=>setCfgForm({...(cfgForm||cfg),startDate:e.target.value})}/>
+              <Inp label="Prazo de Entrega"        value={cfgForm?.endDate     ??cfg.endDate}     onChange={e=>setCfgForm({...(cfgForm||cfg),endDate:e.target.value})}/>
+            </div>
+            <Inp label="Valor Total do Contrato (R$)" type="number" value={cfgForm?.totalMO??cfg.totalMO} onChange={e=>setCfgForm({...(cfgForm||cfg),totalMO:e.target.value})}/>
+            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+              <Btn onClick={saveCfg} disabled={!cfgForm}>💾 Salvar Configurações</Btn>
+              {cfgForm&&<Btn outline color="#607080" onClick={()=>setCfgForm(null)}>Cancelar</Btn>}
+            </div>
+            {!cfgForm&&<div style={{textAlign:"center",fontSize:12,color:"#B0BEC5",marginTop:8}}>Edite qualquer campo acima para habilitar o botão</div>}
+          </Card>
+
+          <Card style={{marginBottom:14}}>
+            <div style={{fontWeight:700,fontSize:15,marginBottom:12}}>📥 Backup e Relatório</div>
+            <div className="g2">
+              <div>
+                <div style={{fontSize:13,color:"#607080",marginBottom:10,lineHeight:1.6}}>Baixar relatório completo como HTML — abra no navegador e Ctrl+P para salvar como PDF.</div>
+                <Btn full onClick={printReport}>📄 Baixar Relatório PDF</Btn>
+              </div>
+              <div>
+                <div style={{fontSize:13,color:"#607080",marginBottom:10,lineHeight:1.6}}>Exportar todos os dados da obra em formato JSON para backup no Google Drive.</div>
+                <Btn full color="#4285F4" onClick={exportJSON}>📁 Exportar Backup JSON</Btn>
+              </div>
+            </div>
+          </Card>
+
           <Card style={{background:"#FFF5F5",border:"1.5px solid #FFCDD2"}}>
             <div style={{fontWeight:700,color:"#C62828",marginBottom:5}}>⚠️ Zona de Risco</div>
-            <div style={{fontSize:13,color:"#607080",marginBottom:12,lineHeight:1.6}}>Reiniciar apagará todos os dados de progresso, medições e histórico. Esta ação não pode ser desfeita.</div>
-            <Btn color="#C62828" onClick={()=>{if(window.confirm("Confirma reiniciar todos os dados?"))save(INIT());fire("Dados reiniciados.","warn");}}>Reiniciar Dados da Obra</Btn>
+            <div style={{fontSize:13,color:"#607080",marginBottom:12,lineHeight:1.6}}>Reiniciar apaga todo o progresso, medições, pagamentos e histórico. Irreversível.</div>
+            <Btn danger onClick={()=>{if(window.confirm("Confirma reiniciar TODOS os dados da obra?"))save(INIT());fire("Dados reiniciados.","warn");}}>🗑 Reiniciar Todos os Dados</Btn>
           </Card>
         </div>}
+
       </div>
 
-      {selPhase&&<PhaseModal phase={selPhase} onClose={()=>setSel(null)} onSave={addUpdate}/>}
+      {/* ── Modais ── */}
+      {selPhase&&<PhaseModal phase={selPhase} onClose={()=>setSel(null)} onSave={addUpdate} onReset={resetPhase}/>}
+
       {showMed&&<Modal title="Registrar Nova Medição" onClose={()=>setShowMed(false)}>
-        <div style={{background:"#F0F7FF",borderRadius:9,padding:"11px 13px",marginBottom:14,fontSize:13,color:"#1F3864",fontWeight:600}}>Evolução atual da obra: {fmtP(overall)}</div>
-        <div className="fg2"><Inp label="Data da Medição" type="date" value={medForm.date} onChange={e=>setMedForm({...medForm,date:e.target.value})}/><Sel label="Tipo de Medição" value={medForm.type} onChange={e=>setMedForm({...medForm,type:e.target.value})}><option value="quinzenal">Quinzenal</option><option value="mensal">Mensal</option><option value="parcial">Parcial</option></Sel></div>
-        <Txa label="Observações Gerais" value={medForm.notes} onChange={e=>setMedForm({...medForm,notes:e.target.value})}/>
-        <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexWrap:"wrap"}}><Btn outline color="#607080" onClick={()=>setShowMed(false)}>Cancelar</Btn><Btn onClick={addMed}>Registrar Medição</Btn></div>
+        <div style={{background:"#F0F7FF",borderRadius:9,padding:"11px 13px",marginBottom:14,fontSize:13,color:"#1F3864",fontWeight:600}}>
+          Evolução atual: {fmtP(overall)}
+        </div>
+        <div className="fg2">
+          <Inp label="Data" type="date" value={medForm.date} onChange={e=>setMedForm({...medForm,date:e.target.value})}/>
+          <Sel label="Tipo" value={medForm.type} onChange={e=>setMedForm({...medForm,type:e.target.value})}>
+            <option value="quinzenal">Quinzenal</option>
+            <option value="mensal">Mensal</option>
+            <option value="parcial">Parcial</option>
+          </Sel>
+        </div>
+        <Txa label="Observações" value={medForm.notes} onChange={e=>setMedForm({...medForm,notes:e.target.value})}/>
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexWrap:"wrap"}}>
+          <Btn outline color="#607080" onClick={()=>setShowMed(false)}>Cancelar</Btn>
+          <Btn onClick={addMed}>Registrar</Btn>
+        </div>
       </Modal>}
+
+      {showPag&&<Modal title="Registrar Pagamento Recebido" onClose={()=>setShowPag(false)}>
+        <div style={{background:"#F0FFF4",borderRadius:9,padding:"11px 13px",marginBottom:14,fontSize:13,color:"#1B5E20",fontWeight:600}}>
+          Saldo atual a receber: {fmt(saldoReceber)}
+        </div>
+        <div className="fg2">
+          <Inp label="Data do Recebimento" type="date" value={pagForm.date} onChange={e=>setPagForm({...pagForm,date:e.target.value})}/>
+          <Sel label="Tipo" value={pagForm.type} onChange={e=>setPagForm({...pagForm,type:e.target.value})}>
+            <option value="Entrada">Entrada</option>
+            <option value="Medição">Medição</option>
+            <option value="Adiantamento">Adiantamento</option>
+            <option value="Parcela">Parcela</option>
+            <option value="Saldo Final">Saldo Final</option>
+          </Sel>
+        </div>
+        <Inp label="Valor Recebido (R$)" type="number" placeholder="Ex: 100000" value={pagForm.value} onChange={e=>setPagForm({...pagForm,value:e.target.value})}/>
+        <Txa label="Observações" value={pagForm.notes} onChange={e=>setPagForm({...pagForm,notes:e.target.value})}/>
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end",flexWrap:"wrap"}}>
+          <Btn outline color="#607080" onClick={()=>setShowPag(false)}>Cancelar</Btn>
+          <Btn color="#117A65" onClick={addPag}>💵 Registrar Pagamento</Btn>
+        </div>
+      </Modal>}
+
       <Toast msg={toast.msg} type={toast.type}/>
     </div>
   );
